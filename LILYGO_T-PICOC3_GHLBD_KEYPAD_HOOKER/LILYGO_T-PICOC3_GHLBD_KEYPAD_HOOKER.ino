@@ -22,6 +22,10 @@
   * @note
   *     https://youtu.be/bl15rUi-c0s?si=jf0vgedSBFEMNGt8
   *
+  *   Ver.02 (2024/06) :
+  *     - Add "Half-QWERTY Key"         Mode
+  *     - Add "Half-QWERTY Key HOLD"    Mode
+  *
   *   Ver.01 (2024/04) :
   *     - Start from default example source
   *       @ref firmware.ino of official release
@@ -52,7 +56,7 @@
 /**
  * @note Current Firmware Version & Board Name
  */
-#define FW_VER              1
+#define FW_VER              2
 
 /**
  * @note Keycode Input
@@ -74,18 +78,21 @@
   #include <WiFiEspAT.h>      // https://github.com/jandrassy/WiFiEspAT
   #endif
 
-// #define IO7_KEY_USE       1
+#define IO7_KEY_USE       1
 
 // #define LILYGO_ORG_SRC_EN 1
 
 /* Macros --------------------------------------------------------------------*/
+#define REG_BIT_IS_SET(__REG__, __BIT__)  ((1<<__BIT__) == (__REG__ & (1<<__BIT__)))
+#define REG_BIT_SET(__REG__, __BIT__)     (__REG__ |=  (1 << __BIT__))
+#define REG_BIT_CLR(__REG__, __BIT__)     (__REG__ &= ~(1 << __BIT__))
 
 /* Types ---------------------------------------------------------------------*/
 
 /* Constructor ---------------------------------------------------------------*/
 
 /**
- * @note Keys
+ * @note T-PicoC3 User Keys
  */
 OneButton button_IO6(PIN_BOTTON1, true);
 OneButton button_IO7(PIN_BOTTON2, true);
@@ -122,6 +129,49 @@ volatile int  dwFreeBufIdx = KEYCODE_BUF_SIZE;
 volatile bool isKeyPadRecvDone = false;
 char bCurrentInputMode = KEYPAD_MODE_WIN_PC_CALC;
 
+/**
+ * @note Key press state (hold)
+ *       bit field = "Keypad code"
+ *        '1' pressed
+ *        '0' released
+ */
+volatile int  dwKeyPressStatus = 0;
+volatile char bLastHoldedKey = 0;
+
+char KeyMap_MODE_HALFKEY[32] = {
+  0x00,             //  0 (N/A)
+  '`',              //  1 GHLBD_KEYPAD_FULL
+  KEY_BACKSPACE,    //  2 GHLBD_KEYPAD_CUT
+  KEY_LEFT_GUI,     //  3 GHLBD_KEYPAD_POINT
+  ' ',              //  4 GHLBD_KEYPAD_00
+  KEY_LEFT_ALT,     //  5 GHLBD_KEYPAD_0
+  'z',              //  6 GHLBD_KEYPAD_1
+  'x',              //  7 GHLBD_KEYPAD_2
+  'c',              //  8 GHLBD_KEYPAD_3
+  'a',              //  9 GHLBD_KEYPAD_4
+  's',              // 10 GHLBD_KEYPAD_5
+  'd',              // 11 GHLBD_KEYPAD_6
+  'q',              // 12 GHLBD_KEYPAD_7
+  'w',              // 13 GHLBD_KEYPAD_8
+  'e',              // 14 GHLBD_KEYPAD_9
+  '1',              // 15 GHLBD_KEYPAD_GT
+  KEY_ESC,          // 16 GHLBD_KEYPAD_SIGN
+  KEY_TAB,          // 17 GHLBD_KEYPAD_BKSPACE
+  KEY_LEFT_SHIFT,   // 18 GHLBD_KEYPAD_CE
+  KEY_LEFT_CTRL,    // 19 GHLBD_KEYPAD_C
+  '2',              // 20 GHLBD_KEYPAD_MARKUP
+  '3',              // 21 GHLBD_KEYPAD_MEM_CLEAR
+  '4',              // 22 GHLBD_KEYPAD_MEM_RECALL
+  '5',              // 23 GHLBD_KEYPAD_M_MINUS
+  '0',              // 24 GHLBD_KEYPAD_M_PLUS
+  'r',              // 25 GHLBD_KEYPAD_PERCENTAGE
+  'f',              // 26 GHLBD_KEYPAD_MULTIPLY
+  KEY_RETURN,       // 27 GHLBD_KEYPAD_PLUS
+  't',              // 28 GHLBD_KEYPAD_SQRT
+  'g',              // 29 GHLBD_KEYPAD_DIVIDE
+  KEY_UP_ARROW,     // 30 GHLBD_KEYPAD_MINUS
+  KEY_DOWN_ARROW    // 31 GHLBD_KEYPAD_EQUAL
+};
 /**
  * @note TFT-LCD Display position
  */
@@ -220,6 +270,22 @@ void    update_disp_curr_method(char METHOD)
       tft.printf(" 6   WIN   <TAB  TAB>  ____  TAB    =   ");
     break;
 
+    case KEYPAD_MODE_HALFKEY :
+    case KEYPAD_MODE_HALFKEY_HOLD :
+      Serial.printf(">> [%s] KEYPAD_MODE_HALFKEY %s\r\n", __FUNCTION__, ((KEYPAD_MODE_HALFKEY == METHOD) ? " " : "(HOLD)"));
+      tft.setTextColor(TFT_MAGENTA);
+      tft.printf("Half KBD %s\r\n", ((KEYPAD_MODE_HALFKEY == METHOD) ? " " : "(HOLD)") );
+
+      tft.setTextSize(1);   tft.setTextColor(TFT_WHITE);
+      tft.printf("------------ [ KEY ASSIGN ] ------------");
+      tft.printf(" 1                            `    BKSP ");
+      tft.printf(" 2    1     2     3     4     5     0   ");
+      tft.printf(" 3   ESC    Q     W     E     R     T   ");
+      tft.printf(" 4   TAB    A     S     D     F     G   ");
+      tft.printf(" 5   ^LSH   Z     X     C     EN    UP  ");
+      tft.printf(" 6   CTRL  ALT   ____  WIN   TER    DN  ");
+    break;
+
     default :
     break;
   }
@@ -237,7 +303,7 @@ void    update_disp_curr_method(char METHOD)
  */
 void    GHLBD_Keystroke_send(char INPUT_MODE, char KEYSTROKE)
 {
-#ifdef DBG_PRINTF_EN
+#if 1 //def DBG_PRINTF_EN
   Serial.printf(">> [%s] INPUT_MODE %02X    KEYSTROKE %02X\r\n", \
                     __FUNCTION__, INPUT_MODE, KEYSTROKE);
 #endif
@@ -787,8 +853,261 @@ void    GHLBD_Keystroke_send(char INPUT_MODE, char KEYSTROKE)
       break;
     }
   }
+  else if( (KEYPAD_MODE_HALFKEY == INPUT_MODE) | \
+           (KEYPAD_MODE_HALFKEY_HOLD == INPUT_MODE) )
+  {
+    if(KEYPAD_MODE_HALFKEY_HOLD == INPUT_MODE)
+    {
+      /* multiple hold */
+      /* status bit inversion */
+      (REG_BIT_IS_SET(dwKeyPressStatus, KEYSTROKE)) ?  \
+          (REG_BIT_CLR(dwKeyPressStatus, KEYSTROKE)) : (REG_BIT_SET(dwKeyPressStatus, KEYSTROKE));
 
-  /* Release Keypress */
+      /* for single hold*/
+      (REG_BIT_IS_SET(dwKeyPressStatus, KEYSTROKE)) ? (bLastHoldedKey = KEYSTROKE) : (bLastHoldedKey = 0);
+    }
+
+    // start 1st press
+    Keyboard.press(KeyMap_MODE_HALFKEY[KEYSTROKE]);
+
+#if 0
+    switch(KEYSTROKE)
+    {
+      /********* Function   Keys *********/
+      case GHLBD_KEYPAD_FULL :
+        if( (KEYPAD_MODE_HALFKEY_HOLD == INPUT_MODE) && (REG_BIT_IS_SET(dwKeyPressStatus, KEYSTROKE)) ) //need release
+          Keyboard.release('`');
+        else
+          Keyboard.press('`');
+      break;
+
+      case GHLBD_KEYPAD_CUT :
+        if( (KEYPAD_MODE_HALFKEY_HOLD == INPUT_MODE) && (REG_BIT_IS_SET(dwKeyPressStatus, KEYSTROKE)) ) //need release
+          Keyboard.release(KEY_BACKSPACE);
+        else
+          Keyboard.press(KEY_BACKSPACE);
+      break;
+
+      case GHLBD_KEYPAD_GT :
+        if( (KEYPAD_MODE_HALFKEY_HOLD == INPUT_MODE) && (REG_BIT_IS_SET(dwKeyPressStatus, KEYSTROKE)) ) //need release
+          Keyboard.release('1');
+        else
+          Keyboard.press('1');
+      break;
+
+      case GHLBD_KEYPAD_SIGN :
+        if( (KEYPAD_MODE_HALFKEY_HOLD == INPUT_MODE) && (REG_BIT_IS_SET(dwKeyPressStatus, KEYSTROKE)) ) //need release
+          Keyboard.release(KEY_ESC);
+        else
+          Keyboard.press(KEY_ESC);
+
+      break;
+
+      case GHLBD_KEYPAD_BKSPACE :
+        if( (KEYPAD_MODE_HALFKEY_HOLD == INPUT_MODE) && (REG_BIT_IS_SET(dwKeyPressStatus, KEYSTROKE)) ) //need release
+          Keyboard.release(KEY_TAB);
+        else
+          Keyboard.press(KEY_TAB);
+      break;
+
+      case GHLBD_KEYPAD_CE :
+        if( (KEYPAD_MODE_HALFKEY_HOLD == INPUT_MODE) && (REG_BIT_IS_SET(dwKeyPressStatus, KEYSTROKE)) ) //need release
+          Keyboard.release(KEY_LEFT_SHIFT);
+        else
+          Keyboard.press(KEY_LEFT_SHIFT);
+      break;
+
+      case GHLBD_KEYPAD_C :
+        if( (KEYPAD_MODE_HALFKEY_HOLD == INPUT_MODE) && (REG_BIT_IS_SET(dwKeyPressStatus, KEYSTROKE)) ) //need release
+          Keyboard.release(KEY_LEFT_CTRL);
+        else
+          Keyboard.press(KEY_LEFT_CTRL);
+      break;
+
+      case GHLBD_KEYPAD_MARKUP :
+        if( (KEYPAD_MODE_HALFKEY_HOLD == INPUT_MODE) && (REG_BIT_IS_SET(dwKeyPressStatus, KEYSTROKE)) ) //need release
+          Keyboard.release('2');
+        else
+          Keyboard.press('2');
+
+      break;
+
+      case GHLBD_KEYPAD_MEM_CLEAR :
+        if( (KEYPAD_MODE_HALFKEY_HOLD == INPUT_MODE) && (REG_BIT_IS_SET(dwKeyPressStatus, KEYSTROKE)) ) //need release
+          Keyboard.release('3');
+        else
+          Keyboard.press('3');
+
+      break;
+
+      case GHLBD_KEYPAD_MEM_RECALL :
+        if( (KEYPAD_MODE_HALFKEY_HOLD == INPUT_MODE) && (REG_BIT_IS_SET(dwKeyPressStatus, KEYSTROKE)) ) //need release
+          Keyboard.release('4');
+        else
+          Keyboard.press('4');
+
+      break;
+
+      case GHLBD_KEYPAD_M_MINUS :
+        if( (KEYPAD_MODE_HALFKEY_HOLD == INPUT_MODE) && (REG_BIT_IS_SET(dwKeyPressStatus, KEYSTROKE)) ) //need release
+          Keyboard.release('5');
+        else
+          Keyboard.press('5');
+
+      break;
+
+      case GHLBD_KEYPAD_M_PLUS :
+        if( (KEYPAD_MODE_HALFKEY_HOLD == INPUT_MODE) && (REG_BIT_IS_SET(dwKeyPressStatus, KEYSTROKE)) ) //need release
+          Keyboard.release('0');
+        else
+          Keyboard.press('0');
+      break;
+
+      case GHLBD_KEYPAD_PLUS :
+        if( (KEYPAD_MODE_HALFKEY_HOLD == INPUT_MODE) && (REG_BIT_IS_SET(dwKeyPressStatus, KEYSTROKE)) ) //need release
+          Keyboard.release(KEY_RETURN);
+        else
+          Keyboard.press(KEY_RETURN);
+      break;
+
+      case GHLBD_KEYPAD_EQUAL :
+        if( (KEYPAD_MODE_HALFKEY_HOLD == INPUT_MODE) && (REG_BIT_IS_SET(dwKeyPressStatus, KEYSTROKE)) ) //need release
+          Keyboard.release(KEY_DOWN_ARROW);
+        else
+          Keyboard.press(KEY_DOWN_ARROW);
+      break;
+
+      case GHLBD_KEYPAD_MINUS :
+        if( (KEYPAD_MODE_HALFKEY_HOLD == INPUT_MODE) && (REG_BIT_IS_SET(dwKeyPressStatus, KEYSTROKE)) ) //need release
+          Keyboard.release(KEY_UP_ARROW);
+        else
+          Keyboard.press(KEY_UP_ARROW);
+      break;
+
+      case GHLBD_KEYPAD_MULTIPLY :
+        if( (KEYPAD_MODE_HALFKEY_HOLD == INPUT_MODE) && (REG_BIT_IS_SET(dwKeyPressStatus, KEYSTROKE)) ) //need release
+          Keyboard.release('f');
+        else
+          Keyboard.press('f');
+      break;
+
+      case GHLBD_KEYPAD_DIVIDE :
+        if( (KEYPAD_MODE_HALFKEY_HOLD == INPUT_MODE) && (REG_BIT_IS_SET(dwKeyPressStatus, KEYSTROKE)) ) //need release
+          Keyboard.release('g');
+        else
+          Keyboard.press('g');
+      break;
+
+      case GHLBD_KEYPAD_PERCENTAGE :
+        if( (KEYPAD_MODE_HALFKEY_HOLD == INPUT_MODE) && (REG_BIT_IS_SET(dwKeyPressStatus, KEYSTROKE)) ) //need release
+          Keyboard.release('r');
+        else
+          Keyboard.press('r');
+      break;
+
+      case GHLBD_KEYPAD_SQRT :
+        if( (KEYPAD_MODE_HALFKEY_HOLD == INPUT_MODE) && (REG_BIT_IS_SET(dwKeyPressStatus, KEYSTROKE)) ) //need release
+          Keyboard.release('t');
+        else
+          Keyboard.press('t');
+      break;
+
+      /********* Num        Keys *********/
+      case GHLBD_KEYPAD_0 :
+        if( (KEYPAD_MODE_HALFKEY_HOLD == INPUT_MODE) && (REG_BIT_IS_SET(dwKeyPressStatus, KEYSTROKE)) ) //need release
+          Keyboard.release(KEY_LEFT_ALT);
+        else
+          Keyboard.press(KEY_LEFT_ALT);
+      break;
+
+      case GHLBD_KEYPAD_1 :
+        if( (KEYPAD_MODE_HALFKEY_HOLD == INPUT_MODE) && (REG_BIT_IS_SET(dwKeyPressStatus, KEYSTROKE)) ) //need release
+          Keyboard.release('z');
+        else
+          Keyboard.press('z');
+      break;
+
+      case GHLBD_KEYPAD_2 :
+        if( (KEYPAD_MODE_HALFKEY_HOLD == INPUT_MODE) && (REG_BIT_IS_SET(dwKeyPressStatus, KEYSTROKE)) ) //need release
+          Keyboard.release('x');
+        else
+          Keyboard.press('x');
+      break;
+
+      case GHLBD_KEYPAD_3 :
+        if( (KEYPAD_MODE_HALFKEY_HOLD == INPUT_MODE) && (REG_BIT_IS_SET(dwKeyPressStatus, KEYSTROKE)) ) //need release
+          Keyboard.release('c');
+        else
+          Keyboard.press('c');
+     break;
+
+      case GHLBD_KEYPAD_4 :
+        if( (KEYPAD_MODE_HALFKEY_HOLD == INPUT_MODE) && (REG_BIT_IS_SET(dwKeyPressStatus, KEYSTROKE)) ) //need release
+          Keyboard.release('a');
+        else
+          Keyboard.press('a');
+      break;
+
+      case GHLBD_KEYPAD_5 :
+        if( (KEYPAD_MODE_HALFKEY_HOLD == INPUT_MODE) && (REG_BIT_IS_SET(dwKeyPressStatus, KEYSTROKE)) ) //need release
+          Keyboard.release('s');
+        else
+          Keyboard.press('s');
+      break;
+
+      case GHLBD_KEYPAD_6 :
+        if( (KEYPAD_MODE_HALFKEY_HOLD == INPUT_MODE) && (REG_BIT_IS_SET(dwKeyPressStatus, KEYSTROKE)) ) //need release
+          Keyboard.release('d');
+        else
+          Keyboard.press('d');
+      break;
+
+      case GHLBD_KEYPAD_7 :
+        if( (KEYPAD_MODE_HALFKEY_HOLD == INPUT_MODE) && (REG_BIT_IS_SET(dwKeyPressStatus, KEYSTROKE)) ) //need release
+          Keyboard.release('q');
+        else
+          Keyboard.press('q');
+      break;
+
+      case GHLBD_KEYPAD_8 :
+        if( (KEYPAD_MODE_HALFKEY_HOLD == INPUT_MODE) && (REG_BIT_IS_SET(dwKeyPressStatus, KEYSTROKE)) ) //need release
+          Keyboard.release('w');
+        else
+          Keyboard.press('w');
+      break;
+
+      case GHLBD_KEYPAD_9 :
+        if( (KEYPAD_MODE_HALFKEY_HOLD == INPUT_MODE) && (REG_BIT_IS_SET(dwKeyPressStatus, KEYSTROKE)) ) //need release
+          Keyboard.release('e');
+        else
+          Keyboard.press('e');
+      break;
+
+      case GHLBD_KEYPAD_00 :
+        if( (KEYPAD_MODE_HALFKEY_HOLD == INPUT_MODE) && (REG_BIT_IS_SET(dwKeyPressStatus, KEYSTROKE)) ) //need release
+          Keyboard.release(' ');
+        else
+          Keyboard.press(' ');
+      break;
+
+      case GHLBD_KEYPAD_POINT :
+        if( (KEYPAD_MODE_HALFKEY_HOLD == INPUT_MODE) && (REG_BIT_IS_SET(dwKeyPressStatus, KEYSTROKE)) ) //need release
+          Keyboard.release(KEY_LEFT_GUI);
+        else
+          Keyboard.press(KEY_LEFT_GUI);
+      break;
+
+      /***********************************/
+      default :
+#ifdef DBG_PRINTF_EN
+          Serial.printf(">> Press Key : %02X\r\n", KEYSTROKE);
+#endif
+      break;
+    }
+#endif
+  }
+
+  /* Release All Keypress */
   Keyboard.releaseAll();
 
   return;
@@ -974,6 +1293,29 @@ void    loop()
     dwRecvBufIdx = 0;
     dwFreeBufIdx = KEYCODE_BUF_SIZE;
   }
+
+  /* KEYPAD_MODE_HALFKEY_HOLD */
+  if(KEYPAD_MODE_HALFKEY_HOLD == bCurrentInputMode)
+  {
+#if 0     // multi hold
+    for(int i=1; i<32; i++)
+    {
+      if(REG_BIT_IS_SET(dwKeyPressStatus, i))
+      {
+        Keyboard.press(KeyMap_MODE_HALFKEY[i]);
+        Keyboard.release(KeyMap_MODE_HALFKEY[i]);
+      }
+    }
+#else     // single hold
+    if(bLastHoldedKey)
+    {
+      Keyboard.press(KeyMap_MODE_HALFKEY[bLastHoldedKey]);
+      Keyboard.release(KeyMap_MODE_HALFKEY[bLastHoldedKey]);
+    }
+#endif
+
+  }
+
 }
 
 
@@ -998,6 +1340,11 @@ void io6_click_event_cb()
   listNetworks();
 #endif
 
+  /* Release All Keys & Reset Key Press Hold status */
+  Keyboard.releaseAll();
+  dwKeyPressStatus = 0;
+
+  /* Update Input Mode */
   bCurrentInputMode++;
   if(KEYPAD_MODE_MAX_LIMIT < bCurrentInputMode)
     bCurrentInputMode = 0;
@@ -1028,11 +1375,20 @@ void io7_click_event_cb()
   #endif
 #endif
 
-  tft.fillScreen(TFT_BLACK);
-  tft.setCursor(0,0);
-  tft.setTextColor(TFT_RED);
-  tft.println("IO7 Key Pressed");
-  Serial.println(">> IO7 Key Pressed");
+  /* Reset All Key Event */
+  dwKeyPressStatus = 0;
+  bLastHoldedKey = 0;
+  Keyboard.releaseAll();
+
+  tft.fillRect(wPosX, wPosY, 240, 135, TFT_BLACK);
+  tft.setCursor(wPosX,wPosY);
+  tft.setTextSize(2);
+  tft.setTextColor(TFT_CYAN);
+  tft.printf("> KEY RESET!!");
+  delay(250);
+
+  update_disp_curr_method(bCurrentInputMode);
+
 }
 #endif /** IO7_KEY_USE **/
 
